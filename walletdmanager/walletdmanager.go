@@ -8,6 +8,9 @@ package walletdmanager
 
 import (
 	"TurtleCoin-Nest/turtlecoinwalletdrpcgo"
+	
+	"TurtleCoin-Nest/wallet-api"
+	
 	"bufio"
 	"io"
 	"math/rand"
@@ -53,7 +56,7 @@ var (
 
 	// fee to be paid to node per transaction
 	NodeFee float64
-)
+)	
 
 // Setup sets up some settings. It must be called at least once at the beginning of your program.
 // platform should be set based on your platform. The choices are "linux", "darwin", "windows"
@@ -76,21 +79,23 @@ func Setup(platform string) {
 }
 
 // RequestBalance provides the available and locked balances of the current wallet
-func RequestBalance() (availableBalance float64, lockedBalance float64, totalBalance float64, err error) {
+func RequestBalance() (availableBalance float64, lockedBalance float64, err error) {
 
-	availableBalance, lockedBalance, totalBalance, err = turtlecoinwalletdrpcgo.RequestBalance(rpcPassword)
+	W := walletapi.InitWalletAPI("password", "127.0.0.1", "8070")
+	
+	availableBalance, lockedBalance, err = W.GetBalance()
 	if err != nil {
 		log.Error("error requesting balances. err: ", err)
 	} else {
 		WalletAvailableBalance = availableBalance
 	}
-	return availableBalance, lockedBalance, totalBalance, err
+	return availableBalance, lockedBalance, err
 }
 
 // RequestAvailableBalanceToBeSpent returns the available balance minus the fee
 func RequestAvailableBalanceToBeSpent(transferFeeString string) (availableBalance float64, err error) {
 
-	availableBalance, _, _, err = RequestBalance()
+	availableBalance, _, err = RequestBalance()
 	if err != nil {
 		return 0, err
 	}
@@ -115,7 +120,9 @@ func RequestAvailableBalanceToBeSpent(transferFeeString string) (availableBalanc
 // RequestAddress provides the address of the current wallet
 func RequestAddress() (address string, err error) {
 
-	address, err = turtlecoinwalletdrpcgo.RequestAddress(rpcPassword)
+	W := walletapi.InitWalletAPI("password", "127.0.0.1", "8070")
+	
+	address, err = W.PrimaryAddress()
 	if err != nil {
 		log.Error("error requesting address. err: ", err)
 	} else {
@@ -125,15 +132,11 @@ func RequestAddress() (address string, err error) {
 }
 
 // RequestListTransactions provides the list of transactions of current wallet
-func RequestListTransactions() (transfers []turtlecoinwalletdrpcgo.Transfer, err error) {
+func RequestListTransactions() (transfers, err error) {
 
-	walletBlockCount, _, _, _, err := turtlecoinwalletdrpcgo.RequestStatus(rpcPassword)
-	if err != nil {
-		log.Error("error getting block count: ", err)
-		return nil, err
-	}
+	W := walletapi.InitWalletAPI("password", "127.0.0.1", "8070")
 
-	transfers, err = turtlecoinwalletdrpcgo.RequestListTransactions(walletBlockCount, 1, []string{WalletAddress}, rpcPassword)
+	_, err = W.GetAllTransactions()
 	if err != nil {
 		log.Error("error requesting list transactions. err: ", err)
 	}
@@ -141,7 +144,7 @@ func RequestListTransactions() (transfers []turtlecoinwalletdrpcgo.Transfer, err
 }
 
 // SendTransaction makes a transfer with the provided information
-func SendTransaction(transferAddress string, transferAmountString string, transferPaymentID string, transferFeeString string) (transactionHash string, err error) {
+func SendTransaction(transferAddress string, transferPaymentID string, transferAmountString string) (transactionHash string, err error) {
 
 	if !WalletdSynced {
 		return "", errors.New("wallet and/or blockchain not fully synced yet")
@@ -164,20 +167,11 @@ func SendTransaction(transferAddress string, transferAmountString string, transf
 		return "", errors.New("amount of TRTL to be sent should be greater than 0")
 	}
 
-	transferFee, err := strconv.ParseFloat(transferFeeString, 64) // transferFee is expressed in TRTL
-	if err != nil {
-		return "", errors.New("fee is invalid")
-	}
+	//W := walletapi.InitWalletAPI("password", "127.0.0.1", "8070")
+	
+	var wallet *walletapi.WalletAPI
 
-	if transferFee < 0 {
-		return "", errors.New("fee should be positive")
-	}
-
-	if transferAmount+transferFee+NodeFee > WalletAvailableBalance {
-		return "", errors.New("your available balance is insufficient")
-	}
-
-	transactionHash, err = turtlecoinwalletdrpcgo.SendTransaction(transferAddress, transferAmount, transferPaymentID, transferFee, rpcPassword)
+	transactionHash, err = wallet.SendTransactionBasic(transferAddress, transferPaymentID, transferAmount)
 	if err != nil {
 		log.Error("error sending transaction. err: ", err)
 		return "", err
@@ -366,9 +360,9 @@ func StartWalletd(walletPath string, walletPassword string, useRemoteNode bool, 
 	var turtleCoindCurrentSessionLogFile *os.File
 
 	if useRemoteNode {
-		cmdWalletd = exec.Command(pathToWalletd, "-w", pathToWallet, "-p", walletPassword, "--log-file", pathToLogWalletdCurrentSession, "--daemon-address", daemonAddress, "--daemon-port", daemonPort, "--log-level", walletdLogLevel, "--rpc-password", rpcPassword)
+		cmdWalletd = exec.Command(pathToWalletd, "-r", rpcPassword)
 	} else {
-		cmdWalletd = exec.Command(pathToWalletd, "-w", pathToWallet, "-p", walletPassword, "--log-file", pathToLogWalletdCurrentSession, "--log-level", walletdLogLevel, "--rpc-password", rpcPassword)
+		cmdWalletd = exec.Command(pathToWalletd, "-r", rpcPassword)
 	}
 	hideCmdWindowIfNeeded(cmdWalletd)
 
@@ -708,16 +702,9 @@ func CreateWallet(walletFilename string, walletPassword string, walletPasswordCo
 		scanHeight = "0"
 	}
 
-	if privateViewKey == "" && privateSpendKey == "" && mnemonicSeed == "" {
-		// generate new wallet
-		cmdWalletd = exec.Command(pathToWalletd, "-w", pathToWallet, "-p", walletPassword, "--log-file", pathToLogWalletdCurrentSession, "--log-level", walletdLogLevel, "-g")
-	} else if mnemonicSeed == "" {
-		// import wallet from private view and spend keys
-		cmdWalletd = exec.Command(pathToWalletd, "-w", pathToWallet, "-p", walletPassword, "--view-key", privateViewKey, "--spend-key", privateSpendKey, "--log-file", pathToLogWalletdCurrentSession, "--log-level", walletdLogLevel, "--scan-height", scanHeight, "-g")
-	} else {
-		// import wallet from seed
-		cmdWalletd = exec.Command(pathToWalletd, "-w", pathToWallet, "-p", walletPassword, "--mnemonic-seed", mnemonicSeed, "--log-file", pathToLogWalletdCurrentSession, "--log-level", walletdLogLevel, "--scan-height", scanHeight, "-g")
-	}
+	rpcPassword = randStringBytesMaskImprSrc(20)
+	
+	cmdWalletd = exec.Command(pathToWalletd, "-r", rpcPassword)
 
 	hideCmdWindowIfNeeded(cmdWalletd)
 

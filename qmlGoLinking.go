@@ -90,8 +90,7 @@ type QmlBridge struct {
 	_ func(stringToCopy string)  `slot:"clickedButtonCopy"`
 	_ func(transferAddress string,
 		transferAmount string,
-		transferPaymentID string,
-		transferFee string) `slot:"clickedButtonSend"`
+		transferPaymentID string) `slot:"clickedButtonSend"`
 	_ func()                                           `slot:"clickedButtonBackupWallet"`
 	_ func()                                           `slot:"clickedCloseWallet"`
 	_ func(pathToWallet string, passwordWallet string) `slot:"clickedButtonOpen"`
@@ -172,9 +171,9 @@ func connectQMLToGOFunctions() {
 		}
 	})
 
-	qmlBridge.ConnectClickedButtonSend(func(transferAddress string, transferAmount string, transferPaymentID string, transferFee string) {
+	qmlBridge.ConnectClickedButtonSend(func(transferAddress string, transferPaymentID string, transferAmount string) {
 		go func() {
-			transfer(transferAddress, transferAmount, transferPaymentID, transferFee)
+			transfer(transferAddress, transferPaymentID, transferAmount)
 		}()
 	})
 
@@ -253,7 +252,6 @@ func connectQMLToGOFunctions() {
 
 	qmlBridge.ConnectLimitDisplayTransactions(func(limit bool) {
 		limitDisplayedTransactions = limit
-		getAndDisplayListTransactions(true)
 	})
 
 	qmlBridge.ConnectGetVersion(func() string {
@@ -287,6 +285,5 @@ func connectQMLToGOFunctions() {
 	})
 
 	qmlBridge.ConnectExportListTransactions(func() {
-		exportListTransactions()
 	})
 }

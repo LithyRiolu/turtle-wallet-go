@@ -6,9 +6,7 @@
 package main
 
 import (
-	"TurtleCoin-Nest/turtlecoinwalletdrpcgo"
 	"TurtleCoin-Nest/walletdmanager"
-	"encoding/csv"
 	"encoding/json"
 	"io"
 	"io/ioutil"
@@ -19,7 +17,6 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -34,7 +31,6 @@ import (
 )
 
 var (
-	transfers                   []turtlecoinwalletdrpcgo.Transfer
 	remoteNodes                 []node
 	indexSelectedRemoteNode     = 0
 	tickerRefreshWalletData     *time.Ticker
@@ -183,7 +179,6 @@ func startDisplayWalletInfo() {
 
 	getAndDisplayBalances()
 	getAndDisplayAddress()
-	getAndDisplayListTransactions(true)
 	getAndDisplayConnectionInfo()
 	getDefaultFeeAndDisplay()
 	getNodeFeeAndDisplay()
@@ -192,7 +187,6 @@ func startDisplayWalletInfo() {
 		tickerRefreshWalletData = time.NewTicker(time.Second * 30)
 		for range tickerRefreshWalletData.C {
 			getAndDisplayBalances()
-			getAndDisplayListTransactions(false)
 		}
 	}()
 
@@ -220,12 +214,12 @@ func startDisplayWalletInfo() {
 
 func getAndDisplayBalances() {
 
-	walletAvailableBalance, walletLockedBalance, walletTotalBalance, err := walletdmanager.RequestBalance()
+	walletAvailableBalance, walletLockedBalance, err := walletdmanager.RequestBalance()
 	if err == nil {
 		qmlBridge.DisplayAvailableBalance(humanize.FormatFloat("#,###.##", walletAvailableBalance))
 		qmlBridge.DisplayLockedBalance(humanize.FormatFloat("#,###.##", walletLockedBalance))
-		balanceUSD := walletTotalBalance * rateUSDTRTL
-		qmlBridge.DisplayTotalBalance(humanize.FormatFloat("#,###.##", walletTotalBalance), humanize.FormatFloat("#,###.##", balanceUSD))
+		balanceUSD := walletAvailableBalance * rateUSDTRTL
+		qmlBridge.DisplayTotalBalance(humanize.FormatFloat("#,###.##", walletAvailableBalance), humanize.FormatFloat("#,###.##", balanceUSD))
 	}
 }
 
@@ -284,64 +278,11 @@ func getAndDisplayConnectionInfo() {
 	}
 }
 
-func getAndDisplayListTransactions(forceFullUpdate bool) {
+func transfer(transferAddress string, transferPaymentID string, transferAmount string) {
 
-	newTransfers, err := walletdmanager.RequestListTransactions()
-	if err == nil {
-		needFullUpdate := false
-		if len(newTransfers) != len(transfers) || forceFullUpdate {
-			needFullUpdate = true
-		}
-		transfers = newTransfers
-		// sort starting by the most recent transaction
-		sort.Slice(transfers, func(i, j int) bool { return transfers[i].Timestamp.After(transfers[j].Timestamp) })
+	log.Info("SEND: to: ", transferAddress, "  payment ID: ", transferPaymentID, "  amount: ", transferAmount, "  node fee: ", walletdmanager.NodeFee)
 
-		if needFullUpdate {
-			transactionNumber := len(transfers)
-
-			qmlBridge.ClearListTransactions()
-
-			for index, transfer := range transfers {
-				if limitDisplayedTransactions && index >= numberTransactionsToDisplay {
-					break
-				}
-				amount := transfer.Amount
-				amountString := ""
-				if amount >= 0 {
-					amountString += "+ "
-					amountString += strconv.FormatFloat(amount, 'f', -1, 64)
-				} else {
-					amountString += "- "
-					amountString += strconv.FormatFloat(-amount, 'f', -1, 64)
-				}
-				amountString += " TRTL (fee: " + strconv.FormatFloat(transfer.Fee, 'f', 2, 64) + ")"
-				confirmationsString := confirmationsStringRepresentation(transfer.Confirmations)
-				timeString := transfer.Timestamp.Format("2006-01-02 15:04:05")
-				transactionNumberString := strconv.Itoa(transactionNumber) + ")"
-				transactionNumber--
-
-				qmlBridge.AddTransactionToList(transfer.PaymentID, transfer.TxID, amountString, confirmationsString, timeString, transactionNumberString)
-			}
-		} else { // just update the number of confirmations of transactions with less than 110 conf
-			for index, transfer := range transfers {
-				if limitDisplayedTransactions && index >= numberTransactionsToDisplay {
-					break
-				}
-				if transfer.Confirmations < 110 {
-					qmlBridge.UpdateConfirmationsOfTransaction(index, confirmationsStringRepresentation(transfer.Confirmations))
-				} else {
-					break
-				}
-			}
-		}
-	}
-}
-
-func transfer(transferAddress string, transferAmount string, transferPaymentID string, transferFee string) {
-
-	log.Info("SEND: to: ", transferAddress, "  amount: ", transferAmount, "  payment ID: ", transferPaymentID, "  network fee: ", transferFee, "  node fee: ", walletdmanager.NodeFee)
-
-	transactionID, err := walletdmanager.SendTransaction(transferAddress, transferAmount, transferPaymentID, transferFee)
+	transactionID, err := walletdmanager.SendTransaction(transferAddress, transferPaymentID, transferAmount)
 	if err != nil {
 		log.Warn("error transfer: ", err)
 		qmlBridge.FinishedSendingTransaction()
@@ -455,7 +396,6 @@ func closeWallet() {
 	tickerSaveWallet.Stop()
 
 	stringBackupKeys = ""
-	transfers = nil
 	limitDisplayedTransactions = true
 	countConnectionProblem = 0
 
@@ -524,76 +464,6 @@ func saveAddress(name string, address string, paymentID string) {
 	} else {
 		recordSavedAddressToDB(name, address, paymentID)
 		qmlBridge.DisplayPopup("Saved!", 1500)
-	}
-}
-
-func exportListTransactions() {
-
-	pathToExportFile := "transactions." + walletdmanager.WalletFilename + ".csv"
-
-	if isPlatformDarwin {
-		usr, err := user.Current()
-		if err != nil {
-			log.Fatal(err)
-		}
-		pathToExportFile = usr.HomeDir + "/" + pathToExportFile
-	} else {
-		pathToAppDirectory, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-		if isPlatformWindows {
-			pathToExportFile = pathToAppDirectory + "\\" + pathToExportFile
-		} else {
-			// linux
-			pathToExportFile = pathToAppDirectory + "/" + pathToExportFile
-		}
-	}
-
-	fileExport, err := os.Create(pathToExportFile)
-	if err != nil {
-		log.Error("error creating export file. err: ", err)
-		qmlBridge.DisplayErrorDialog("error creating export file", err.Error())
-		return
-	}
-	defer fileExport.Close()
-
-	writer := csv.NewWriter(fileExport)
-
-	records := [][]string{
-		{"Index", "Timestamp", "Readable Timestamp", "Block", "Amount", "Fee", "TxID", "PaymentID", "Confirmations"},
-	}
-
-	inversedTransactionIndex := len(transfers)
-
-	for _, transfer := range transfers {
-		indexString := strconv.Itoa(inversedTransactionIndex)
-		timestampString := strconv.FormatInt(transfer.Timestamp.Unix(), 10)
-		readableTimestampString := transfer.Timestamp.Format("2006-01-02 15:04:05")
-		blockString := strconv.Itoa(transfer.Block)
-		amountString := strconv.FormatFloat(transfer.Amount, 'f', -1, 64)
-		feeString := strconv.FormatFloat(transfer.Fee, 'f', 2, 64)
-		txIDString := transfer.TxID
-		paymentIDString := transfer.PaymentID
-		confirmationsString := strconv.Itoa(transfer.Confirmations)
-
-		records = append(records, []string{indexString, timestampString, readableTimestampString, blockString, amountString, feeString, txIDString, paymentIDString, confirmationsString})
-
-		inversedTransactionIndex--
-	}
-
-	for _, record := range records {
-		if err := writer.Write(record); err != nil {
-			log.Error("error writing record to csv. err: ", err)
-			qmlBridge.DisplayErrorDialog("error exporting record", err.Error())
-			return
-		}
-	}
-
-	writer.Flush()
-
-	if err := writer.Error(); err != nil {
-		log.Error("error writing to the csv file. err: ", err)
-		qmlBridge.DisplayErrorDialog("error writing to the csv file", err.Error())
-	} else {
-		qmlBridge.DisplayInfoDialog("Success", "list of transactions successfully exported to", pathToExportFile)
 	}
 }
 

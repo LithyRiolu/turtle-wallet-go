@@ -1,0 +1,7 @@
+language: go
+go:
+  - "1.12"
+before_script:
+  - wget https://github.com/turtlecoin/turtlecoin/releases/download/v0.14.6/turtlecoin-v0.14.6-linux.tar.gz
+  - tar zxf turtle*
+  - screen -d -m ./turtle*/wallet-api -r password
